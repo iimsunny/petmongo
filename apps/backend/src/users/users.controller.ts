@@ -13,8 +13,31 @@ import { DatabaseService } from '../database/database.service';
 export class UsersController {
   constructor(private readonly databaseService: DatabaseService) {}
 
+  private async tableExists(tableName: string): Promise<boolean> {
+    const rows = await this.databaseService.query<{ exists: boolean }>(
+      `
+        SELECT EXISTS (
+          SELECT 1
+          FROM information_schema.tables
+          WHERE table_schema = 'public'
+            AND table_name = $1
+        ) AS exists
+      `,
+      [tableName],
+    );
+    return Boolean(rows[0]?.exists);
+  }
+
   @Get(':id')
   async getUser(@Param('id') id: string) {
+    const hasAdminUsers = await this.tableExists('admin_users');
+    const adminExpr = hasAdminUsers
+      ? `EXISTS (
+          SELECT 1
+          FROM admin_users au
+          WHERE au.user_id = users.id
+        )`
+      : 'FALSE';
     const rows = await this.databaseService.query<{
       id: string;
       phone: string | null;
@@ -31,6 +54,7 @@ export class UsersController {
       following_count: number;
       followers_count: number;
       likes_received_count: number;
+      is_admin: boolean;
     }>(
       `
         SELECT
@@ -48,7 +72,8 @@ export class UsersController {
           pet_birthday,
           following_count,
           followers_count,
-          likes_received_count
+          likes_received_count,
+          ${adminExpr} AS is_admin
         FROM users
         WHERE id = $1
         LIMIT 1
@@ -77,6 +102,7 @@ export class UsersController {
       followingCount: user.following_count,
       followersCount: user.followers_count,
       likesReceivedCount: user.likes_received_count,
+      isAdmin: user.is_admin,
     };
   }
 

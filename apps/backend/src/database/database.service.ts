@@ -7,9 +7,11 @@ export class DatabaseService implements OnModuleDestroy {
   private readonly pool: Pool;
 
   constructor(private readonly configService: ConfigService) {
-    const connectionString =
-      this.configService.get<string>('DATABASE_URL') ||
-      'postgres://petmongo:petmongo_pwd@localhost:5432/petmongo';
+    const connectionString = this.configService.get<string>('DATABASE_URL');
+
+    if (!connectionString) {
+      throw new Error('DATABASE_URL is required. Point it to your Neon Postgres.');
+    }
 
     this.pool = new Pool({ connectionString });
   }

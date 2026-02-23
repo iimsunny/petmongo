@@ -1,5 +1,5 @@
 import { StatusBar } from 'expo-status-bar';
-import { useEffect, useState } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import * as ImagePicker from 'expo-image-picker';
 import {
   Image,
@@ -24,6 +24,12 @@ import { colors } from './src/theme/colors';
 import { fetchDiscoverPosts, createDiscoverPost } from './src/api/discoverApi';
 import { oneClickLogin } from './src/api/authApi';
 import { fetchUser, updateUser } from './src/api/usersApi';
+import {
+  fetchPendingPostReviews,
+  fetchPendingResourceReviews,
+  reviewPost,
+  reviewResource,
+} from './src/api/adminApi';
 
 const AppContent = () => {
   const resolveMediaUrl = (value) => {
@@ -36,6 +42,9 @@ const AppContent = () => {
   const [resources, setResources] = useState([]);
   const [activeCategory, setActiveCategory] = useState('全部');
   const [selectedResource, setSelectedResource] = useState(null);
+  const resourceMediaScrollRef = useRef(null);
+  const [resourceMediaIndex, setResourceMediaIndex] = useState(0);
+  const [resourceMediaWidth, setResourceMediaWidth] = useState(0);
   const [detailResource, setDetailResource] = useState(null);
   const [activeTab, setActiveTab] = useState('home');
   const [selectedDiscoverPost, setSelectedDiscoverPost] = useState(null);
@@ -92,6 +101,20 @@ const AppContent = () => {
   const [grasslandImages, setGrasslandImages] = useState([]);
   const [grasslandVideos, setGrasslandVideos] = useState([]);
   const [grasslandLoading, setGrasslandLoading] = useState(false);
+  const adminUserIds = (process.env.EXPO_PUBLIC_ADMIN_USER_IDS || '')
+    .split(',')
+    .map((value) => value.trim())
+    .filter(Boolean);
+  const isAdminUser = Boolean(
+    currentUser?.isAdmin || (currentUser?.id && adminUserIds.includes(currentUser.id)),
+  );
+  const [showAdminReview, setShowAdminReview] = useState(false);
+  const [adminReviewTab, setAdminReviewTab] = useState('resource');
+  const [pendingResourceReviews, setPendingResourceReviews] = useState([]);
+  const [pendingPostReviews, setPendingPostReviews] = useState([]);
+  const [adminReviewLoading, setAdminReviewLoading] = useState(false);
+  const [adminReviewError, setAdminReviewError] = useState('');
+  const [adminActionLoadingId, setAdminActionLoadingId] = useState('');
 
   const updateProfileField = (key, value) => {
     setProfileForm((prev) => ({ ...prev, [key]: value }));
@@ -131,6 +154,13 @@ const AppContent = () => {
     loadDiscover();
   }, [activeTab, discoverTab, discoverQuery]);
 
+  useEffect(() => {
+    setResourceMediaIndex(0);
+    if (resourceMediaScrollRef.current?.scrollTo) {
+      resourceMediaScrollRef.current.scrollTo({ x: 0, animated: false });
+    }
+  }, [selectedResource?.id]);
+
           useEffect(() => {
     if (!currentUser?.id) {
       return;
@@ -162,6 +192,12 @@ const AppContent = () => {
       isActive = false;
     };
   }, [currentUser?.id]);
+
+  useEffect(() => {
+    if (showAdminReview && isAdminUser) {
+      loadAdminReviews();
+    }
+  }, [showAdminReview, isAdminUser]);
 
   const handleOneClickLogin = async () => {
     setAuthLoading(true);
@@ -204,10 +240,112 @@ const AppContent = () => {
     }
   };
 
+  const loadAdminReviews = async () => {
+    if (!currentUser?.id) {
+      return;
+    }
+    setAdminReviewLoading(true);
+    setAdminReviewError('');
+    try {
+      const [resourceRows, postRows] = await Promise.all([
+        fetchPendingResourceReviews({ reviewerId: currentUser?.id, limit: 100 }),
+        fetchPendingPostReviews({ reviewerId: currentUser?.id, limit: 100 }),
+      ]);
+      setPendingResourceReviews(resourceRows || []);
+      setPendingPostReviews(postRows || []);
+    } catch (error) {
+      setAdminReviewError(error?.message || 'Failed to load pending reviews');
+    } finally {
+      setAdminReviewLoading(false);
+    }
+  };
+
+  const handleReviewResource = async (resourceId, action) => {
+    if (!currentUser?.id) {
+      return;
+    }
+    setAdminActionLoadingId(`resource:${resourceId}:${action}`);
+    try {
+      await reviewResource({
+        resourceId,
+        action,
+        reviewerId: currentUser.id,
+      });
+      setPendingResourceReviews((prev) => prev.filter((item) => item.id !== resourceId));
+
+      const latestResources = await fetchResources({
+        city: '上海',
+        category: activeCategory === '全部' ? undefined : activeCategory,
+      });
+      setResources(latestResources);
+    } catch (error) {
+      alert(error?.message || 'Resource review failed');
+    } finally {
+      setAdminActionLoadingId('');
+    }
+  };
+
+  const handleReviewPost = async (postId, action) => {
+    if (!currentUser?.id) {
+      return;
+    }
+    setAdminActionLoadingId(`post:${postId}:${action}`);
+    try {
+      await reviewPost({
+        postId,
+        action,
+        reviewerId: currentUser.id,
+      });
+      setPendingPostReviews((prev) => prev.filter((item) => item.id !== postId));
+
+      if (activeTab === 'discover') {
+        const latestPosts = await fetchDiscoverPosts({
+          city: '上海',
+          category: discoverTab,
+          q: discoverQuery.trim() || undefined,
+        });
+        setDiscoverPosts(latestPosts);
+      }
+    } catch (error) {
+      alert(error?.message || 'Post review failed');
+    } finally {
+      setAdminActionLoadingId('');
+    }
+  };
+
   const discoverTabs = ['推荐', '户外', '宠物健康', '宠物训练', '宠物用品', '旅行'];
   const discoverHeights = [210, 160, 190, 220, 170, 200];
   const leftPosts = discoverPosts.filter((_, index) => index % 2 === 0);
   const rightPosts = discoverPosts.filter((_, index) => index % 2 === 1);
+  const selectedResourceMedia = selectedResource?.media?.length
+    ? selectedResource.media
+    : selectedResource?.coverUrl
+    ? [
+        {
+          id: `${selectedResource.id}-cover`,
+          type: 'image',
+          url: selectedResource.coverUrl,
+        },
+      ]
+    : [];
+
+  const handleResourceMediaScroll = (event) => {
+    if (!selectedResourceMedia.length) {
+      return;
+    }
+    const pageWidth = event?.nativeEvent?.layoutMeasurement?.width || resourceMediaWidth || 1;
+    const offsetX = event?.nativeEvent?.contentOffset?.x || 0;
+    const nextIndex = Math.max(
+      0,
+      Math.min(
+        Math.round(offsetX / pageWidth),
+        selectedResourceMedia.length - 1,
+      ),
+    );
+    if (nextIndex !== resourceMediaIndex) {
+      setResourceMediaIndex(nextIndex);
+    }
+  };
 
   return (
     <SafeAreaView style={styles.container}>
@@ -1035,6 +1173,17 @@ const AppContent = () => {
                 >
                   <Text style={styles.profilePageSettingsIcon}>⚙️</Text>
                 </Pressable>
+                {isAdminUser && (
+                  <Pressable
+                    style={styles.profilePageAdminButton}
+                    onPress={() => {
+                      setAdminReviewTab('resource');
+                      setShowAdminReview(true);
+                    }}
+                  >
+                    <Text style={styles.profilePageAdminButtonText}>审核后台</Text>
+                  </Pressable>
+                )}
               </View>
             </View>
 
@@ -1060,6 +1209,148 @@ const AppContent = () => {
           </ScrollView>
         </View>
       )}
+
+      <Modal
+        visible={showAdminReview}
+        animationType="slide"
+        onRequestClose={() => setShowAdminReview(false)}
+      >
+        <SafeAreaView style={styles.adminReviewContainer}>
+          <View style={styles.adminReviewHeader}>
+            <Pressable onPress={() => setShowAdminReview(false)}>
+              <Text style={styles.adminReviewCloseText}>关闭</Text>
+            </Pressable>
+            <Text style={styles.adminReviewTitle}>审核后台</Text>
+            <Pressable onPress={loadAdminReviews}>
+              <Text style={styles.adminReviewRefreshText}>刷新</Text>
+            </Pressable>
+          </View>
+
+          <View style={styles.adminReviewTabs}>
+            <Pressable
+              style={[
+                styles.adminReviewTabItem,
+                adminReviewTab === 'resource' && styles.adminReviewTabItemActive,
+              ]}
+              onPress={() => setAdminReviewTab('resource')}
+            >
+              <Text
+                style={[
+                  styles.adminReviewTabText,
+                  adminReviewTab === 'resource' && styles.adminReviewTabTextActive,
+                ]}
+              >
+                草地审核
+              </Text>
+            </Pressable>
+            <Pressable
+              style={[
+                styles.adminReviewTabItem,
+                adminReviewTab === 'post' && styles.adminReviewTabItemActive,
+              ]}
+              onPress={() => setAdminReviewTab('post')}
+            >
+              <Text
+                style={[
+                  styles.adminReviewTabText,
+                  adminReviewTab === 'post' && styles.adminReviewTabTextActive,
+                ]}
+              >
+                帖子审核
+              </Text>
+            </Pressable>
+          </View>
+
+          {adminReviewError ? (
+            <Text style={styles.adminReviewErrorText}>{adminReviewError}</Text>
+          ) : null}
+
+          {adminReviewLoading ? (
+            <View style={styles.adminReviewLoadingBox}>
+              <Text style={styles.adminReviewLoadingText}>加载中...</Text>
+            </View>
+          ) : (
+            <ScrollView
+              contentContainerStyle={styles.adminReviewList}
+              showsVerticalScrollIndicator={false}
+            >
+              {adminReviewTab === 'resource' ? (
+                pendingResourceReviews.length > 0 ? (
+                  pendingResourceReviews.map((item) => (
+                    <View key={item.id} style={styles.adminReviewCard}>
+                      <Text style={styles.adminReviewCardTitle}>{item.title}</Text>
+                      <Text style={styles.adminReviewCardMeta}>
+                        {item.category} · {item.city}
+                      </Text>
+                      {item.locationHint ? (
+                        <Text style={styles.adminReviewCardBody} numberOfLines={2}>
+                          地点：{item.locationHint}
+                        </Text>
+                      ) : null}
+                      {item.safety ? (
+                        <Text style={styles.adminReviewCardBody} numberOfLines={2}>
+                          提示：{item.safety}
+                        </Text>
+                      ) : null}
+                      <View style={styles.adminReviewActions}>
+                        <Pressable
+                          style={styles.adminReviewApproveButton}
+                          disabled={adminActionLoadingId === `resource:${item.id}:approve`}
+                          onPress={() => handleReviewResource(item.id, 'approve')}
+                        >
+                          <Text style={styles.adminReviewApproveText}>通过</Text>
+                        </Pressable>
+                        <Pressable
+                          style={styles.adminReviewRejectButton}
+                          disabled={adminActionLoadingId === `resource:${item.id}:reject`}
+                          onPress={() => handleReviewResource(item.id, 'reject')}
+                        >
+                          <Text style={styles.adminReviewRejectText}>拒绝</Text>
+                        </Pressable>
+                      </View>
+                    </View>
+                  ))
+                ) : (
+                  <Text style={styles.adminReviewEmptyText}>暂无待审核草地</Text>
+                )
+              ) : pendingPostReviews.length > 0 ? (
+                pendingPostReviews.map((item) => (
+                  <View key={item.id} style={styles.adminReviewCard}>
+                    <Text style={styles.adminReviewCardTitle}>{item.title}</Text>
+                    <Text style={styles.adminReviewCardMeta}>
+                      {item.authorName} · {item.category}
+                    </Text>
+                    {item.coverUrl ? (
+                      <Image
+                        source={{ uri: resolveMediaUrl(item.coverUrl) }}
+                        style={styles.adminReviewPostCover}
+                      />
+                    ) : null}
+                    <View style={styles.adminReviewActions}>
+                      <Pressable
+                        style={styles.adminReviewApproveButton}
+                        disabled={adminActionLoadingId === `post:${item.id}:approve`}
+                        onPress={() => handleReviewPost(item.id, 'approve')}
+                      >
+                        <Text style={styles.adminReviewApproveText}>通过</Text>
+                      </Pressable>
+                      <Pressable
+                        style={styles.adminReviewRejectButton}
+                        disabled={adminActionLoadingId === `post:${item.id}:reject`}
+                        onPress={() => handleReviewPost(item.id, 'reject')}
+                      >
+                        <Text style={styles.adminReviewRejectText}>拒绝</Text>
+                      </Pressable>
+                    </View>
+                  </View>
+                ))
+              ) : (
+                <Text style={styles.adminReviewEmptyText}>暂无待审核帖子</Text>
+              )}
+            </ScrollView>
+          )}
+        </SafeAreaView>
+      </Modal>
 
       {/* Edit Profile Modal */}
       <Modal
@@ -1997,36 +2288,77 @@ const AppContent = () => {
                   {selectedResource.category} · {selectedResource.city}
                 </Text>
                 <Text style={styles.modalSection}>图片</Text>
-                <ScrollView
-                  horizontal
-                  showsHorizontalScrollIndicator={false}
-                  contentContainerStyle={styles.mediaRow}
+                <View
+                  style={styles.mediaCarousel}
+                  onLayout={(event) => {
+                    const width = event?.nativeEvent?.layout?.width || 0;
+                    if (width > 0 && width !== resourceMediaWidth) {
+                      setResourceMediaWidth(width);
+                    }
+                  }}
                 >
-                  {(selectedResource.media || []).length > 0 ? (
-                    selectedResource.media.map((media) => {
-                      const url = media.url?.startsWith('/')
-                        ? `${API_BASE_URL}${encodeURI(media.url)}`
-                        : encodeURI(media.url || '');
-                      return (
-                        <View key={media.id} style={styles.mediaItem}>
-                          {media.type === 'image' && url ? (
-                            <Image source={{ uri: url }} style={styles.mediaImage} />
-                          ) : (
-                            <View style={styles.mediaPlaceholder}>
-                              <Text style={styles.mediaPlaceholderText}>暂无图片</Text>
-                            </View>
-                          )}
+                  <ScrollView
+                    ref={resourceMediaScrollRef}
+                    horizontal
+                    pagingEnabled
+                    bounces={false}
+                    showsHorizontalScrollIndicator={false}
+                    decelerationRate="fast"
+                    scrollEventThrottle={16}
+                    onScroll={handleResourceMediaScroll}
+                    onScrollEndDrag={handleResourceMediaScroll}
+                    onMomentumScrollEnd={handleResourceMediaScroll}
+                    contentContainerStyle={styles.mediaRow}
+                  >
+                    {selectedResourceMedia.length > 0 ? (
+                      selectedResourceMedia.map((media, index) => {
+                        const url = media.url?.startsWith('/')
+                          ? `${API_BASE_URL}${encodeURI(media.url)}`
+                          : encodeURI(media.url || '');
+                        return (
+                          <View
+                            key={`${media.id}-${index}`}
+                            style={[styles.mediaItem, { width: resourceMediaWidth || 220 }]}
+                          >
+                            {media.type === 'image' && url ? (
+                              <Image source={{ uri: url }} style={styles.mediaImage} />
+                            ) : (
+                              <View style={styles.mediaPlaceholder}>
+                                <Text style={styles.mediaPlaceholderText}>暂无图片</Text>
+                              </View>
+                            )}
+                          </View>
+                        );
+                      })
+                    ) : (
+                      <View style={[styles.mediaItem, { width: resourceMediaWidth || 220 }]}>
+                        <View style={styles.mediaPlaceholder}>
+                          <Text style={styles.mediaPlaceholderText}>暂无图片</Text>
                         </View>
-                      );
-                    })
-                  ) : (
-                    <View style={styles.mediaItem}>
-                      <View style={styles.mediaPlaceholder}>
-                        <Text style={styles.mediaPlaceholderText}>暂无图片</Text>
                       </View>
+                    )}
+                  </ScrollView>
+                  {selectedResourceMedia.length > 0 ? (
+                    <View style={styles.mediaPageBadge}>
+                      <Text style={styles.mediaPageBadgeText}>
+                        {resourceMediaIndex + 1}/{selectedResourceMedia.length}
+                      </Text>
                     </View>
-                  )}
-                </ScrollView>
+                  ) : null}
+                </View>
+                {selectedResourceMedia.length > 1 ? (
+                  <View style={styles.mediaDots}>
+                    {selectedResourceMedia.map((media, index) => (
+                      <View
+                        key={`dot-${media.id}-${index}`}
+                        style={[
+                          styles.mediaDot,
+                          index === resourceMediaIndex && styles.mediaDotActive,
+                        ]}
+                      />
+                    ))}
+                  </View>
+                ) : null}
                 <Text style={styles.modalSection}>地点</Text>
                 <Pressable
                   style={styles.locationCard}
@@ -3057,6 +3389,173 @@ const styles = StyleSheet.create({
     fontSize: 14,
     color: '#333',
   },
+  profilePageAdminButton: {
+    marginLeft: 8,
+    paddingHorizontal: 12,
+    paddingVertical: 8,
+    borderRadius: 20,
+    borderWidth: 2,
+    borderColor: '#333',
+    backgroundColor: '#8BC34A',
+    shadowColor: '#333',
+    shadowOffset: { width: 2, height: 2 },
+    shadowOpacity: 1,
+    shadowRadius: 0,
+  },
+  profilePageAdminButtonText: {
+    fontSize: 12,
+    color: '#222',
+    fontWeight: '900',
+  },
+  adminReviewContainer: {
+    flex: 1,
+    backgroundColor: '#F2F4F8',
+  },
+  adminReviewHeader: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+    paddingHorizontal: 16,
+    paddingVertical: 12,
+    borderBottomWidth: 1,
+    borderBottomColor: '#DDE3ED',
+    backgroundColor: '#fff',
+  },
+  adminReviewTitle: {
+    fontSize: 16,
+    fontWeight: '900',
+    color: '#222',
+  },
+  adminReviewCloseText: {
+    fontSize: 14,
+    fontWeight: '700',
+    color: '#444',
+  },
+  adminReviewRefreshText: {
+    fontSize: 14,
+    fontWeight: '700',
+    color: colors.primary,
+  },
+  adminReviewTabs: {
+    flexDirection: 'row',
+    marginHorizontal: 16,
+    marginTop: 12,
+    marginBottom: 6,
+    borderRadius: 12,
+    backgroundColor: '#fff',
+    padding: 4,
+  },
+  adminReviewTabItem: {
+    flex: 1,
+    alignItems: 'center',
+    justifyContent: 'center',
+    borderRadius: 10,
+    paddingVertical: 8,
+  },
+  adminReviewTabItemActive: {
+    backgroundColor: '#EAF3DD',
+  },
+  adminReviewTabText: {
+    fontSize: 13,
+    color: '#666',
+    fontWeight: '700',
+  },
+  adminReviewTabTextActive: {
+    color: '#2A6B1F',
+    fontWeight: '900',
+  },
+  adminReviewErrorText: {
+    marginHorizontal: 16,
+    marginTop: 8,
+    color: '#B00020',
+    fontSize: 12,
+    fontWeight: '700',
+  },
+  adminReviewLoadingBox: {
+    flex: 1,
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  adminReviewLoadingText: {
+    fontSize: 14,
+    color: '#666',
+    fontWeight: '700',
+  },
+  adminReviewList: {
+    paddingHorizontal: 16,
+    paddingTop: 8,
+    paddingBottom: 24,
+    gap: 10,
+  },
+  adminReviewCard: {
+    backgroundColor: '#fff',
+    borderRadius: 14,
+    padding: 12,
+    borderWidth: 1,
+    borderColor: '#DFE5EF',
+  },
+  adminReviewCardTitle: {
+    fontSize: 15,
+    fontWeight: '800',
+    color: '#222',
+  },
+  adminReviewCardMeta: {
+    marginTop: 4,
+    fontSize: 12,
+    color: '#667085',
+    fontWeight: '600',
+  },
+  adminReviewCardBody: {
+    marginTop: 4,
+    fontSize: 12,
+    color: '#444',
+    lineHeight: 18,
+  },
+  adminReviewPostCover: {
+    marginTop: 8,
+    width: '100%',
+    height: 160,
+    borderRadius: 10,
+    backgroundColor: '#ECEFF3',
+  },
+  adminReviewActions: {
+    marginTop: 10,
+    flexDirection: 'row',
+    gap: 8,
+  },
+  adminReviewApproveButton: {
+    flex: 1,
+    backgroundColor: '#3FAE2A',
+    borderRadius: 10,
+    alignItems: 'center',
+    justifyContent: 'center',
+    paddingVertical: 10,
+  },
+  adminReviewApproveText: {
+    color: '#fff',
+    fontSize: 13,
+    fontWeight: '800',
+  },
+  adminReviewRejectButton: {
+    flex: 1,
+    backgroundColor: '#EAEEF4',
+    borderRadius: 10,
+    alignItems: 'center',
+    justifyContent: 'center',
+    paddingVertical: 10,
+  },
+  adminReviewRejectText: {
+    color: '#3B4756',
+    fontSize: 13,
+    fontWeight: '800',
+  },
+  adminReviewEmptyText: {
+    marginTop: 20,
+    textAlign: 'center',
+    color: '#667085',
+    fontSize: 13,
+    fontWeight: '700',
+  },
   profilePageExtraCards: {
     flexDirection: 'row',
     paddingHorizontal: 20,
@@ -3882,20 +4381,57 @@ const styles = StyleSheet.create({
     fontSize: 13,
     color: colors.textPrimary,
   },
+  mediaCarousel: {
+    borderRadius: 14,
+    overflow: 'hidden',
+    backgroundColor: colors.surfaceAlt,
+  },
   mediaRow: {
     paddingVertical: 4,
-    gap: 12,
+    gap: 0,
   },
   mediaItem: {
-    width: 220,
-    height: 130,
-    borderRadius: 14,
+    height: 220,
     overflow: 'hidden',
     backgroundColor: colors.surfaceAlt,
   },
   mediaImage: {
     width: '100%',
-    height: '100%',
+    height: 220,
+  },
+  mediaPageBadge: {
+    position: 'absolute',
+    top: 10,
+    right: 10,
+    backgroundColor: 'rgba(0, 0, 0, 0.45)',
+    borderRadius: 999,
+    paddingHorizontal: 8,
+    paddingVertical: 3,
+  },
+  mediaPageBadgeText: {
+    color: '#fff',
+    fontSize: 11,
+    fontWeight: '600',
+  },
+  mediaDots: {
+    flexDirection: 'row',
+    alignSelf: 'center',
+    alignItems: 'center',
+    justifyContent: 'center',
+    gap: 6,
+    marginTop: 8,
+  },
+  mediaDot: {
+    width: 6,
+    height: 6,
+    borderRadius: 3,
+    backgroundColor: '#CFD6E0',
+  },
+  mediaDotActive: {
+    width: 8,
+    height: 8,
+    borderRadius: 4,
+    backgroundColor: colors.primary,
   },
   mediaPlaceholder: {
     flex: 1,

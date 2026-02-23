@@ -1,31 +1,12 @@
-import { mockResources } from '../data/mockResources';
 import { API_BASE_URL, buildUrl } from './client';
 
-const delay = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
-
 export const fetchResources = async ({ city, category } = {}) => {
-  try {
-    const url = buildUrl('/api/resources', { city, category });
-    const response = await fetch(url);
-    if (!response.ok) {
-      throw new Error('Failed to fetch resources');
-    }
-    return await response.json();
-  } catch (error) {
-    // TODO: 接入真实 API 后移除 mock fallback
-    await delay(200);
-    return mockResources.filter((item) => {
-      const cityOk = city ? item.city === city : true;
-      const categoryOk = category ? item.category === category : true;
-      return cityOk && categoryOk;
-    });
+  const url = buildUrl('/api/resources', { city, category });
+  const response = await fetch(url);
+  if (!response.ok) {
+    throw new Error('Failed to fetch resources');
   }
-};
-
-export const submitResource = async (payload) => {
-  // TODO: 接入真实 API（提交资源进入审核）
-  await delay(300);
-  return { ok: true, id: `temp-${Date.now()}`, payload };
+  return response.json();
 };
 
 export const createResource = async (resourceData) => {
@@ -44,5 +25,3 @@ export const createResource = async (resourceData) => {
 
   return response.json();
 };
-
-

@@ -8,10 +8,11 @@ export const ResourceCard = ({ item }) => {
   const tags = item.tags || [];
   const media = item.media || [];
   const cover = media.find((entry) => entry.type === 'image');
-  const coverUrl = cover?.url
-    ? cover.url.startsWith('/')
-      ? `${API_BASE_URL}${encodeURI(cover.url)}`
-      : encodeURI(cover.url)
+  const rawCoverUrl = cover?.url || item.coverUrl || null;
+  const coverUrl = rawCoverUrl
+    ? rawCoverUrl.startsWith('/')
+      ? `${API_BASE_URL}${encodeURI(rawCoverUrl)}`
+      : encodeURI(rawCoverUrl)
     : null;
   return (
     <View style={styles.card}>
